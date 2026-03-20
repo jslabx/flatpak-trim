@@ -1,0 +1,74 @@
+categories:
+  socket:
+    remove:
+      - pulseaudio # microphone access
+      - ssh-auth
+      - fallback-x11
+    replace: {}
+
+  # Minimal filesystem defaults:
+  filesystem:
+    remove:
+      - host
+      - home
+      - host-os
+      - host-etc
+      - xdg-desktop
+      - xdg-documents
+      - xdg-music
+      - xdg-pictures
+      - xdg-public-share
+      - xdg-videos
+      - xdg-templates
+      - xdg-config
+      - xdg-cache
+      - xdg-data
+    replace: {}
+
+  device:
+    remove:
+      - all
+      - dri
+      - kvm
+      - shm
+      - input
+      - usb
+    replace: {}
+
+  share:
+    remove: []
+    replace: {}
+
+  allow:
+    remove: []
+    replace: {}
+
+  talk-name:
+    remove: 
+      - org.freedesktop.secrets
+      - org.kde.kwalletd5
+    replace: {}
+
+  system-talk-name:
+    remove: []
+    replace: {}
+
+  own-name:
+    remove: []
+    replace: {}
+
+  env:
+    remove: []
+    replace: {}
+
+  unset-env:
+    remove: []
+    replace: {}
+
+  persist:
+    remove: []
+    replace: {}
+
+  add-policy:
+    remove: []
+    replace: {}
