@@ -2,7 +2,7 @@
 
 Flatpak manifests often have broad permissions, defeating the purpose of sandboxing.
 
-This script programatically strips and redfines permissions from any Flatpak.
+This script programatically strips and redefines permissions from any Flatpak.
 
 ## Usage
 
@@ -22,18 +22,35 @@ python -m pip install -r requirements.txt
 
 ### Running the script
 
+#### Trim a Flatpak manifest
+
 Using local manifest:
 ```sh
 python flatpak_trim.py --manifest com.example.app.yaml --config config.yaml
 ```
 
-Using git repository:
+Using git repo manifest:
 ```sh
 python flatpak_trim.py --git-repo https://github.com/you/repo.git --manifest path/to/com.example.app.yaml --config config.yaml
 ```
 
-Example output:
+Install the new manifest:
+```sh 
+flatpak-builder --install-deps-from=flathub build-dir com.example.app.yaml
+flatpak-builder --force-clean --user --install build-dir com.example.app.yaml
+```
 
+#### Trim an installed Flatpak
+Apply for current user:
+```sh
+python flatpak_trim.py --app-id com.example.app --config config.yaml
+```
+
+Apply system-wide overrides:
+```sh
+python flatpak_trim.py --system --app-id com.example.app --config config.yaml
+```
+#### Example output
 ```
 Manifest: /path/to/com.example.App.yaml
 Permission changes:

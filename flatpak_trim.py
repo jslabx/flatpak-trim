@@ -3,8 +3,11 @@
 Trim Flatpak manifest permissions using YAML config.
 
 Usage:
-  python3 flatpak_trim.py --manifest com.example.App.yaml --config config.yaml
-  python3 flatpak_trim.py --git-repo <repo-url> --manifest path/in/repo.yaml --config config.yaml
+  python flatpak_trim.py --manifest com.example.App.yaml --config config.yaml
+  python flatpak_trim.py --git-repo <repo-url> --manifest path/in/repo.yaml --config config.yaml
+
+Edit permissions for an installed Flatpak app (via overrides):
+  python flatpak_trim.py --app-id com.example.App --config config.yaml
 """
 
 from __future__ import annotations
@@ -12,12 +15,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import re
 import shutil
 import sys
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 try:
     import yaml
@@ -61,22 +65,30 @@ class TrimResult:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Remove or replace Flatpak finish-args permissions based on YAML rules."
+        description="Trim Flatpak manifest permissions or edit installed app overrides based on YAML rules."
     )
     parser.add_argument(
         "--git-repo",
         dest="git_repo",
-        help="Enable git mode by cloning this repo into the current directory (accepts SSH and HTTP URIs).",
+        help="(trim-manifest) Enable git mode by cloning this repo into the current directory (accepts SSH and HTTP URIs).",
     )
     parser.add_argument(
         "--manifest",
-        required=True,
-        help="Path to Flatpak manifest file (.yaml/.yml/.json). In --git-repo mode, this is relative to the checked-out repo root.",
+        help="(trim-manifest) Path to Flatpak manifest file (.yaml/.yml/.json). In --git-repo mode, this is relative to the checked-out repo root.",
     )
     parser.add_argument(
         "--config",
         required=True,
         help="Path to YAML config file with permission trim rules.",
+    )
+    parser.add_argument(
+        "--app-id",
+        help="(edit-installed) Flatpak application id to update (for example: org.gnome.gedit).",
+    )
+    parser.add_argument(
+        "--system",
+        action="store_true",
+        help="(edit-installed) Apply overrides system-wide instead of per-user.",
     )
     return parser.parse_args()
 
@@ -106,18 +118,29 @@ def main() -> None:
     config_path = Path(args.config).expanduser().resolve()
 
     try:
-        if args.git_repo:
-            cwd = Path.cwd()
-            manifest_rel_path = Path(args.manifest)
-            exit_code = run_git_mode(
-                repo_url=args.git_repo,
-                manifest_rel_path=manifest_rel_path,
+        if args.app_id:
+            if args.git_repo:
+                raise ValueError("--git-repo is only supported in trim-manifest mode.")
+            exit_code = run_edit_installed(
+                app_id=args.app_id,
                 config_path=config_path,
-                cwd=cwd,
+                system=bool(args.system),
             )
         else:
-            manifest_path = Path(args.manifest).expanduser().resolve()
-            exit_code = run(manifest_path=manifest_path, config_path=config_path)
+            if not args.manifest:
+                raise ValueError("--manifest is required in trim manifest mode.")
+            if args.git_repo:
+                cwd = Path.cwd()
+                manifest_rel_path = Path(args.manifest)
+                exit_code = run_git_mode(
+                    repo_url=args.git_repo,
+                    manifest_rel_path=manifest_rel_path,
+                    config_path=config_path,
+                    cwd=cwd,
+                )
+            else:
+                manifest_path = Path(args.manifest).expanduser().resolve()
+                exit_code = run(manifest_path=manifest_path, config_path=config_path)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
@@ -134,6 +157,20 @@ def print_report(manifest_path: Path, changes: list[ChangeRecord]) -> None:
         print("No permission changes were applied.")
         return
 
+    print_permission_changes(changes)
+
+def print_installed_report(app_id: str, changes: list[ChangeRecord]) -> None:
+    print(f"App: {app_id}")
+    if not changes:
+        print("No permission changes were applied.")
+        print_view_permissions_line(app_id=app_id)
+        return
+
+    print_permission_changes(changes)
+    print_view_permissions_line(app_id=app_id)
+
+
+def print_permission_changes(changes: list[ChangeRecord]) -> None:
     print("Permission changes:")
     for idx, item in enumerate(changes, start=1):
         from_value = format_permission_arg(item.old_arg)
@@ -141,6 +178,10 @@ def print_report(manifest_path: Path, changes: list[ChangeRecord]) -> None:
             format_permission_arg(item.new_arg) if item.new_arg is not None else "REMOVED"
         )
         print(f"{idx}. [{item.category}] {from_value} -> {to_value}")
+
+
+def print_view_permissions_line(*, app_id: str) -> None:
+    print(f"View permissions with: flatpak info --show-permissions {app_id}")
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -337,6 +378,180 @@ def run_git_mode(
 
     manifest_path = (cwd / manifest_rel_path).resolve()
     return run(manifest_path=manifest_path, config_path=config_path)
+
+
+@dataclass(frozen=True)
+class CategoryOverride:
+    set_flag: Callable[[str], str]
+    unset_flag: Callable[[str], str] | None
+
+
+def _parse_env_var_value(value: str) -> tuple[str, str]:
+    if "=" not in value:
+        raise ValueError(
+            f"Invalid env finish-arg value '{value}'. Expected 'VAR=VALUE'."
+        )
+    var, rhs = value.split("=", 1)
+    if not var or not rhs:
+        raise ValueError(
+            f"Invalid env finish-arg value '{value}'. Expected 'VAR=VALUE'."
+        )
+    return var, rhs
+
+
+def _validate_app_id(app_id: str) -> None:
+    if not isinstance(app_id, str) or not app_id:
+        raise ValueError("Invalid --app-id (must be a non-empty string).")
+    if not re.match(r"^[A-Za-z0-9_.-]+$", app_id):
+        raise ValueError(f"Invalid --app-id '{app_id}'.")
+
+
+def _build_override_specs() -> dict[str, CategoryOverride]:
+    return {
+        "filesystem": CategoryOverride(
+            set_flag=lambda v: f"--filesystem={v}",
+            unset_flag=lambda v: f"--nofilesystem={v}",
+        ),
+        "socket": CategoryOverride(
+            set_flag=lambda v: f"--socket={v}",
+            unset_flag=lambda v: f"--nosocket={v}",
+        ),
+        "share": CategoryOverride(
+            set_flag=lambda v: f"--share={v}",
+            unset_flag=lambda v: f"--unshare={v}",
+        ),
+        "device": CategoryOverride(
+            set_flag=lambda v: f"--device={v}",
+            unset_flag=lambda v: f"--nodevice={v}",
+        ),
+        "allow": CategoryOverride(
+            set_flag=lambda v: f"--allow={v}",
+            unset_flag=lambda v: f"--disallow={v}",
+        ),
+        "talk-name": CategoryOverride(
+            set_flag=lambda v: f"--talk-name={v}",
+            unset_flag=lambda v: f"--no-talk-name={v}",
+        ),
+        "system-talk-name": CategoryOverride(
+            set_flag=lambda v: f"--system-talk-name={v}",
+            unset_flag=lambda v: f"--system-no-talk-name={v}",
+        ),
+        "env": CategoryOverride(
+            set_flag=lambda v: f"--env={v}",
+            unset_flag=lambda v: f"--unset-env={_parse_env_var_value(v)[0]}",
+        ),
+        "add-policy": CategoryOverride(
+            set_flag=lambda v: f"--add-policy={v}",
+            unset_flag=lambda v: f"--remove-policy={v}",
+        ),
+        # Removal/unsetting is not currently available for these categories.
+        "own-name": CategoryOverride(set_flag=lambda v: f"--own-name={v}", unset_flag=None),
+        "unset-env": CategoryOverride(
+            set_flag=lambda v: f"--unset-env={v}", unset_flag=None
+        ),
+        "persist": CategoryOverride(
+            set_flag=lambda v: f"--persist={v}", unset_flag=None
+        ),
+    }
+
+
+def _build_installed_override_changes_and_flags(
+    rules_by_category: dict[str, CategoryRules],
+) -> tuple[list[ChangeRecord], list[str], list[str]]:
+    specs = _build_override_specs()
+
+    flags: list[str] = []
+    changes: list[ChangeRecord] = []
+    warnings: list[str] = []
+
+    for category in sorted(rules_by_category.keys()):
+        rules = rules_by_category[category]
+        spec = specs.get(category)
+        if spec is None:
+            raise ValueError(
+                f"Unsupported category '{category}' in edit-installed mode."
+            )
+
+        for old_value in sorted(rules.remove):
+            if spec.unset_flag is None:
+                raise ValueError(
+                    f"Cannot remove '{category}={old_value}' via flatpak override."
+                )
+            flags.append(spec.unset_flag(old_value))
+            changes.append(
+                ChangeRecord(
+                    category=category,
+                    old_arg=f"--{category}={old_value}",
+                    new_arg=None,
+                )
+            )
+
+        for old_value in sorted(rules.replace.keys()):
+            new_value = rules.replace[old_value]
+            if new_value is None:
+                if spec.unset_flag is None:
+                    raise ValueError(
+                        f"Cannot remove '{category}={old_value}' via flatpak override."
+                    )
+                flags.append(spec.unset_flag(old_value))
+                changes.append(
+                    ChangeRecord(
+                        category=category,
+                        old_arg=f"--{category}={old_value}",
+                        new_arg=None,
+                    )
+                )
+                continue
+
+            if category == "env":
+                old_var, _old_rhs = _parse_env_var_value(old_value)
+                new_var, _new_rhs = _parse_env_var_value(new_value)
+                if old_var != new_var:
+                    if spec.unset_flag is None:
+                        raise ValueError(
+                            f"Cannot remove env '{old_var}' via flatpak override."
+                        )
+                    flags.append(spec.unset_flag(old_value))
+                flags.append(spec.set_flag(new_value))
+            else:
+                if spec.unset_flag is None:
+                    warnings.append(
+                        f"Cannot remove '{category}={old_value}' via flatpak override; it will remain alongside the replacement."
+                    )
+                else:
+                    flags.append(spec.unset_flag(old_value))
+                flags.append(spec.set_flag(new_value))
+
+            changes.append(
+                ChangeRecord(
+                    category=category,
+                    old_arg=f"--{category}={old_value}",
+                    new_arg=f"--{category}={new_value}",
+                )
+            )
+
+    return changes, flags, warnings
+
+
+def run_edit_installed(*, app_id: str, config_path: Path, system: bool) -> int:
+    _validate_app_id(app_id)
+
+    config = load_yaml(config_path)
+    rules_by_category = validate_rules(config)
+    changes, flags, warnings = _build_installed_override_changes_and_flags(
+        rules_by_category=rules_by_category
+    )
+
+    for warning in warnings:
+        print(f"Warning: {warning}", file=sys.stderr)
+
+    if flags:
+        scope_flag = "--system" if system else "--user"
+        cmd = ["flatpak", "override", scope_flag, *flags, app_id]
+        subprocess.run(cmd, check=True)
+
+    print_installed_report(app_id=app_id, changes=changes)
+    return 0
 
 
 if __name__ == "__main__":
