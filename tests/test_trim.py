@@ -83,7 +83,9 @@ class FlatpakTrimTest(unittest.TestCase):
             backup_path = tmp / "app.yaml.original"
             self.assertTrue(backup_path.exists())
 
-            updated_manifest = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            updated_manifest = yaml.safe_load(
+                manifest_path.read_text(encoding="utf-8")
+            )
             self.assertEqual(
                 ["--filesystem=xdg-documents:ro", "--socket=wayland"],
                 updated_manifest["finish-args"],

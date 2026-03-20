@@ -4,7 +4,9 @@ Flatpak manifests often have broad permissions, defeating the purpose of sandbox
 
 This script programatically strips and redfines permissions from any Flatpak.
 
-## Run
+## Usage
+
+### Dependencies
 
 Install dependencies:
 ```bash
@@ -18,9 +20,16 @@ source .venv/bin/activate
 python -m pip install -r requirements.txt
 ```
 
-Example usage:
+### Running the script
+
+Using local manifest:
 ```sh
-python flatpak_trim.py --manifest com.example.App.yaml --config config.yaml
+python flatpak_trim.py --manifest com.example.app.yaml --config config.yaml
+```
+
+Using git repository:
+```sh
+python flatpak_trim.py --git-repo https://github.com/you/repo.git --manifest path/to/com.example.app.yaml --config config.yaml
 ```
 
 Example output:
@@ -82,6 +91,6 @@ The sample config includes common permission-related categories:
 
 Run unit tests with:
 
-```bash
-python -m unittest -v tests.py
+```sh
+python -m unittest discover -s tests -v
 ```

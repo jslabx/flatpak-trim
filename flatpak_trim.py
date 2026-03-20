@@ -4,6 +4,7 @@ Trim Flatpak manifest permissions using YAML config.
 
 Usage:
   python3 flatpak_trim.py --manifest com.example.App.yaml --config config.yaml
+  python3 flatpak_trim.py --git-repo <repo-url> --manifest path/in/repo.yaml --config config.yaml
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ import copy
 import json
 import shutil
 import sys
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,9 +64,14 @@ def parse_args() -> argparse.Namespace:
         description="Remove or replace Flatpak finish-args permissions based on YAML rules."
     )
     parser.add_argument(
+        "--git-repo",
+        dest="git_repo",
+        help="Enable git mode by cloning this repo into the current directory (accepts SSH and HTTP URIs).",
+    )
+    parser.add_argument(
         "--manifest",
         required=True,
-        help="Path to Flatpak manifest file (.yaml/.yml/.json).",
+        help="Path to Flatpak manifest file (.yaml/.yml/.json). In --git-repo mode, this is relative to the checked-out repo root.",
     )
     parser.add_argument(
         "--config",
@@ -72,7 +79,6 @@ def parse_args() -> argparse.Namespace:
         help="Path to YAML config file with permission trim rules.",
     )
     return parser.parse_args()
-
 
 def run(manifest_path: Path, config_path: Path) -> int:
     config = load_yaml(config_path)
@@ -97,11 +103,21 @@ def run(manifest_path: Path, config_path: Path) -> int:
 
 def main() -> None:
     args = parse_args()
-    manifest_path = Path(args.manifest).expanduser().resolve()
     config_path = Path(args.config).expanduser().resolve()
 
     try:
-        exit_code = run(manifest_path=manifest_path, config_path=config_path)
+        if args.git_repo:
+            cwd = Path.cwd()
+            manifest_rel_path = Path(args.manifest)
+            exit_code = run_git_mode(
+                repo_url=args.git_repo,
+                manifest_rel_path=manifest_rel_path,
+                config_path=config_path,
+                cwd=cwd,
+            )
+        else:
+            manifest_path = Path(args.manifest).expanduser().resolve()
+            exit_code = run(manifest_path=manifest_path, config_path=config_path)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
@@ -288,6 +304,39 @@ def format_permission_arg(arg: str | None) -> str:
     if arg is None:
         return "REMOVED"
     return arg[2:] if arg.startswith("--") else arg
+
+
+def checkout_repo(repo_url: str, *, cwd: Path) -> None:
+    # Avoid surprising behavior by cloning into a non-empty directory.
+    if any(cwd.iterdir()):
+        raise ValueError(
+            f"Refusing to clone into non-empty directory: {cwd}. Use an empty directory or run without git mode."
+        )
+
+    print(f"Cloning repo into {cwd}")
+    subprocess.run(
+        ["git", "clone", "--depth", "1", repo_url, "."],
+        cwd=str(cwd),
+        check=True,
+    )
+
+
+def run_git_mode(
+    repo_url: str, *, manifest_rel_path: Path, config_path: Path, cwd: Path
+) -> int:
+    if manifest_rel_path.is_absolute():
+        raise ValueError(
+            "In --mode=git, --manifest must be a path relative to the checked-out repo root."
+        )
+    if any(part == ".." for part in manifest_rel_path.parts):
+        raise ValueError("In --mode=git, --manifest must not contain '..'.")
+    if not repo_url:
+        raise ValueError("Missing --repo-url for --mode=git.")
+
+    checkout_repo(repo_url, cwd=cwd)
+
+    manifest_path = (cwd / manifest_rel_path).resolve()
+    return run(manifest_path=manifest_path, config_path=config_path)
 
 
 if __name__ == "__main__":
