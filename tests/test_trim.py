@@ -7,7 +7,7 @@ from typing import Optional
 
 import yaml
 
-from flatpak_trim import apply_rules_to_finish_args, run, validate_rules
+from flatpak_trim import apply_rules_to_manifest, run, validate_rules
 
 
 class FlatpakTrimTest(unittest.TestCase):
@@ -128,7 +128,7 @@ class FlatpakTrimTest(unittest.TestCase):
         else:
             self.fail(f"Unknown mode: {mode}")
 
-        result = apply_rules_to_finish_args([old_arg], rules)
+        result = apply_rules_to_manifest([old_arg], rules)
         new_args = result.finish_args
         changes = result.changes
         if expected_value is None:

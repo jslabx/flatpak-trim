@@ -11,16 +11,15 @@ Edit permissions for an installed Flatpak app (via overrides):
 """
 
 from __future__ import annotations
-
 import argparse
 import copy
+from dataclasses import dataclass
 import json
+from pathlib import Path
 import re
 import shutil
-import sys
 import subprocess
-from dataclasses import dataclass
-from pathlib import Path
+import sys
 from typing import Any, Callable
 
 try:
@@ -100,7 +99,7 @@ def run(manifest_path: Path, config_path: Path) -> int:
     finish_args = ensure_manifest_shape(manifest, manifest_path)
     finish_args_before = copy.deepcopy(finish_args)
 
-    result = apply_rules_to_finish_args(
+    result = apply_rules_to_manifest(
         finish_args=finish_args_before,
         rules_by_category=rules_by_category,
     )
@@ -109,7 +108,7 @@ def run(manifest_path: Path, config_path: Path) -> int:
     manifest["finish-args"] = result.finish_args
     save_manifest(manifest_path, manifest, manifest_fmt)
 
-    print_report(manifest_path, result.changes)
+    print_manifest_diff(manifest_path, result.changes)
     return 0
 
 
@@ -151,37 +150,32 @@ def main() -> None:
     raise SystemExit(exit_code)
 
 
-def print_report(manifest_path: Path, changes: list[ChangeRecord]) -> None:
+def print_manifest_diff(manifest_path: Path, changes: list[ChangeRecord]) -> None:
     print(f"Manifest: {manifest_path}")
     if not changes:
         print("No permission changes were applied.")
         return
 
-    print_permission_changes(changes)
+    print_diff(changes)
 
-def print_installed_report(app_id: str, changes: list[ChangeRecord]) -> None:
+def print_override_diff(app_id: str, changes: list[ChangeRecord]) -> None:
     print(f"App: {app_id}")
     if not changes:
         print("No permission changes were applied.")
-        print_view_permissions_line(app_id=app_id)
-        return
+    else:
+        print_diff(changes)
 
-    print_permission_changes(changes)
-    print_view_permissions_line(app_id=app_id)
+    print(f"View permissions with: flatpak info --show-permissions {app_id}")
 
 
-def print_permission_changes(changes: list[ChangeRecord]) -> None:
+def print_diff(changes: list[ChangeRecord]) -> None:
     print("Permission changes:")
-    for idx, item in enumerate(changes, start=1):
+    for idx, item in enumerate[ChangeRecord](changes, start=1):
         from_value = format_permission_arg(item.old_arg)
         to_value = (
             format_permission_arg(item.new_arg) if item.new_arg is not None else "REMOVED"
         )
         print(f"{idx}. [{item.category}] {from_value} -> {to_value}")
-
-
-def print_view_permissions_line(*, app_id: str) -> None:
-    print(f"View permissions with: flatpak info --show-permissions {app_id}")
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
@@ -245,7 +239,7 @@ def backup_manifest(manifest_path: Path) -> Path:
     return backup
 
 
-def apply_rules_to_finish_args(
+def apply_rules_to_manifest(
     finish_args: list[Any],
     rules_by_category: dict[str, CategoryRules],
 ) -> TrimResult:
@@ -406,7 +400,7 @@ def _validate_app_id(app_id: str) -> None:
         raise ValueError(f"Invalid --app-id '{app_id}'.")
 
 
-def _build_override_specs() -> dict[str, CategoryOverride]:
+def _build_override_commands() -> dict[str, CategoryOverride]:
     return {
         "filesystem": CategoryOverride(
             set_flag=lambda v: f"--filesystem={v}",
@@ -458,7 +452,7 @@ def _build_override_specs() -> dict[str, CategoryOverride]:
 def _build_installed_override_changes_and_flags(
     rules_by_category: dict[str, CategoryRules],
 ) -> tuple[list[ChangeRecord], list[str], list[str]]:
-    specs = _build_override_specs()
+    specs = _build_override_commands()
 
     flags: list[str] = []
     changes: list[ChangeRecord] = []
@@ -550,7 +544,7 @@ def run_edit_installed(*, app_id: str, config_path: Path, system: bool) -> int:
         cmd = ["flatpak", "override", scope_flag, *flags, app_id]
         subprocess.run(cmd, check=True)
 
-    print_installed_report(app_id=app_id, changes=changes)
+    print_override_diff(app_id=app_id, changes=changes)
     return 0
 
 
